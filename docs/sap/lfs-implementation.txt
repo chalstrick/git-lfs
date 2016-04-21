@@ -1,0 +1,225 @@
+ spec: https://github.com/github/git-lfs/blob/8f90f594162d0a7e90e2f5785287f4327f097235/docs/spec.md
+
+
+clean-filter
+------------
+https://github.com/github/git-lfs/blob/8f90f594162d0a7e90e2f5785287f4327f097235/docs/extensions.md
+
+When staging a file, Git invokes the LFS clean filter, as described earlier.
+If no extensions are installed, the LFS clean filter reads bytes from STDIN,
+calculates the SHA-256 signature, and writes the bytes to a temp file.
+It then moves the temp file into the appropriate place in .git/lfs/objects
+and writes a valid pointer file to STDOUT.
+
+extensions can pipe the content through additional extension commands
+
+command_clean.go -> run by the git clean filters
+----------------
+requires stdin
+input:      stdin is file content to be filtered
+args[0]:    relative path of file to be filtered
+current directory must be set to root of working tree
+
+- install hooks (pre-push)
+- set progress monitor (CopyCallbackFile)
+- (handle extensions)
+- lfs.PointerClean
+    - copy stdin to a temp file (${os.tempdir}/git-lfs) and compute sha256 on the fly     // change to git tempdir
+        - return oid, size, tempfile path. Recognize the error that working tree file
+	  contains a pointer file -> raise an error
+    - construct Pointer struct
+    - returns path to temp file, Pointer
+- calculate target path in .git/lfs/objects/<oid>
+- if file already exists
+    - if the existing file has different size throw exception ("files don't match")
+    - if size is correct return content of pointer file, skipping moving the temp file
+        to the lfs object's target path
+- if file doesn't exist rename temp file to target path
+- render pointer file to stdout
+
+====
+Trace for cleaning file "1.bin" which new content of size 157, first line=="ll"
+cleanCommand(["1.bin"]) {
+	InstallHooks(false)
+	filename=args[0]="1.bin"
+	Stat("1.bin") -> non-nil	
+	fileSize = stat.Size() -> 157
+	CopyCallBackFile("clean", "1.bin", 1, 1) -> irrelevant,progress monitor?
+	PointerClean(Stdin, "1.bin", 157, irrelevant) {
+		SortExtensions(Config.Extensions()=irrelevant) -> extensions=[]
+		copyToTemp(Stdin, 157, irrelevant) {
+			TempFile("") -> tmp=?
+			oidHash = Sha256.New()
+			writer = MultiWriter(oidHash, tmp) 
+			// Detect the error situation that the content we tried to clean is already pointer-file content
+			DecodeFrom(Stdin) {
+				buf = make byte[1024]
+				Stdin.read(buf) -> written=3 (reads one line of Stdin, 2 characters and the eol character, buf=[ll\n]
+				output = buf[0:2] // = ll\n
+				decodeKV(TrimeSpace("ll\n")) {
+					decodeKVData("ll") {
+						kvps = make map string->string
+						if !regexp("git-media|hawser|git-lfs").Match("ll")
+							return newNotAPointerError(err)
+					} -> kvps=irrelevant, err=non-nil
+				} -> p=nil, err=non-nil
+			} -> by="ll\n", ptr=nil, err=non-nil
+			// if err==nill and len(by)<512 return an error newCleanPointerError. Means: error:tried to clean a pointer file
+
+			// No pointer file content -> read content as normal. But we already read one line from the stream. Create a new string which will first return the already read data and then return the rest from Stdin
+			multi = MultiReader("ll\n", Stdin)
+			CopyWithCallback(writer, multi, fileSize=157, cb (irrelevant progress monitor) {
+				Clonefile(writer, mulit) -> success=false  //Calls System call BTRFS_IOC_CLONE. Don't know what it does
+				io.Copy(writer, multi) -> size=157, err=nil // The Copy!
+			} -> size=157, err=nil
+			oid = hex.EncodeString(oidHash.Sum(nil)) -> oid=931b...
+		} -> oid=931b..., size=157, tmp=?
+		pointer = { Version="...V1", Oid=931b..., Size=157, OidType=Sha256, Extensions=[] }
+	} -> cleaned={ Filename="/home/chris/git/lfsTest/.git/lfs/tmp/xxx", pointer={ Version="...V1" ... s.o.} }
+	tmpfile = cleaned.Filename (="/home/chris/git/lfsTest/.git/lfs/tmp/xxx")
+	lfs.LocalMediaPath(cleand.Oid(="931b...")) -> mediafile="/home/chris/git/lfsTest/.git/lfs/objects/93/1b/931b..."
+	os.Rename(tmpfile="/home/chris/git/lfsTest/.git/lfs/tmp/xxx", mediafile="/home/chris/git/lfsTest/.git/lfs/objects/93/1b/931b...")
+	lfs.EncodePointer(Stdout, cleaned.Pointer={ Version="...V1", Oid...}) {
+		Stdout.Write(pointer.Encoded() -> "version ...\noid Sha256:931b...\nsize=157..."
+	}
+}
+
+smudge filter
+---------------
+
+command_smudge.go -> run by smudge filter
+-----------------
+stdin: pointer file content
+args[0]: relative path of pointer file, if path is not given it's replaced by "unknown file"
+
+- install hooks
+- parse pointer file from stdin
+  - return pointer (oid, size)    (of type Pointer)
+- linkOrCopyFromReference(oid, size)
+    - if object exists with correct size in .git/lfs/objects do nothing
+    - check if object exists in LocalReferenceDir -> alternateMediaPath
+    - if object is found with correct size in alternateMediaPath
+        - symlink it to .git/lfs/objects, if this fails copy the file
+- add progress monitor on stdin
+- check include/exclude filters if file should be downloaded
+- check if option --skip or GIT_LFS_SKIP_SMUDGE is set
+- Pointer.smudge(stdout, args[0], download flag, progress monitor) (function PointerSmudge)
+    - calculate local media path (.git/lfs/objects/<oid>)
+    - linkOrCopyFromReference(oid, size)  # why is this done again ??
+    - check if file already exists with wrong size -> delete from local media directory
+    - if file doesn't exist and download flag is true
+        - download the file from the LFS server (in Download)
+            - call protocol endpoint of the server to get the download information
+            - download file from LFS storage, compute hash to detect corruption
+    - stream file content to stdout
+
+prepare_push
+-------------
+
+command_pre_push.go -> run by pre-push hook
+-------------------
+see pre-push hook in https://git-scm.com/docs/githooks
+
+args[0]:    remote name
+args[1]:    remote URL
+stdin:  Information about what is to be pushed is provided on the hook's standard input with lines of the form:
+<local ref> SP <local sha1> SP <remote ref> SP <remote sha1> LF
+
+ validate that args are passed otherwise exit with an Error
+- validate args[0] is a valid remote
+
+- create new upload context (flag prePushDryRun and set of uploaded oids)
+- scanOpts: scanRefOptions
+    - ScanLeftToRemoteMode -> get commits reachable from given ref not yet available in remote
+    - current remote
+- parse stdin to get local ref, local sha1, remote ref, remote sha1
+- for each line
+    - extract <local sha1> and ^<remote sha1>  , ^ means "not"
+    - if prePushDeleteBranch continue
+    - otherwise
+        pointers = ScanRefs(<local sha1>, ^<remote sha1>, scanOpts)
+        - ScanRefs takes a ref and returns a collection of Pointers for
+          all Git LFS pointers it find for that ref, if an object is used in multiple versions
+          it's only reported once
+          - ScanRefsToChan
+            - if no options passed create default options
+            - if no <local sha1> -> implies ScanAllMode
+            - revListShas : use git rev-list to return stream of object sha1s for the given ref
+                - revListArgsRefVsRemote: compare remote tracking branches against remote branches (ls-remote)
+                    to detect refs which were deleted on the server
+                    -> list of refs missing on the server (remote branch or tag was deleted)
+                    - if there are no missing refs
+                        - skip remote tracking branches as source
+                    - else
+                        - add non-missing remote tracking branches as source
+                - run
+                    - (no missing refs): git rev-list --objects --not --remotes=<remote name>
+                    - (missing refs):    git rev-list --objects --not <list of remote tracking branches which are not missing on the server>
+            - list of candidate objects: filter object list returned by git rev-list (in catFileBatchCheck())
+                - RevBlob only
+                - size < blob_size_cutoff (1024 bytes)      (pointer files are smaller than that)
+            - decode file content of candidates to LFS Pointers (catFileBatch())
+                - concurrently parse blobs to create LFS Pointers
+                    - decodePointer()
+                        - find version, oid, size key value pairs
+                        - parse extensions
+                - return LFS pointers
+    - upload(context, pointers)
+        - if dry-run print objects which would be uploaded (oid, size) and return
+        - uploader.go: prepareUpload()
+            - skip objects not available in local .git/lfs/objects which the LFS server already has
+            - for each pointer
+                - if corresponding blob exists with correct size in local media store
+                    - add it to uploadables
+                - else
+                    - add it to missingLocalObjects
+            - for list of all objects missing locally
+                - ask LFS server if it has object (context.checkMissing())
+            - upload files to LFS server concurrently
+                - skip files missing locally but present on the server
+                - log error for files missing locally not present on the server
+
+=========
+Trace of pre-push when pushing one new commit to master
+
+prePushCommand(args=["origin", "https://github.com/chalstrick/lfsTest.git"]) {
+	ValidateRemote(args[0]="origin) -> true
+	ctx = newUploadContext(dryRun=false) -> { DryRun=false, uploadedOids=[] }
+	scanOpt = newScanRefsOptions() -> {nameMap(string->string)=[], mutext=sync.Mutex}
+	scanOpt.ScanMode = ScanLeftToRemoteMode
+	scanOpt.RemoteName = Config.CurrentRemote = "origin"
+	scanner = bufio.NewScanner(Stdin)
+	for scanner.Scan() {
+		line = scanner.Text() -> "HEAD 8C00... refs/heads/master 3842..."
+		decodeRefs(line="HEAD 8C...") {
+			// split line by " " and return second and forth element (the IDs!)
+		} -> left=8C00... , right=3842
+		if (left=="00000...")  // if we want to delete a remote branch we have nothing to do
+		ScanRefs(left="8C00...", right="3842...", scanOpt={...}) {
+			ScanRefsToChan(refLeft="8C00...", refRight="3842...", opt={...}) {
+				if (refLeft="8C00..." == "" ) opt.ScanMode=ScanAllMode
+				revListShas(refLeft="8C00...", refRight="3842...", opt={...}) {
+					refArgs=["rev-list", "--objects"]
+					if (opt.ScanMode(=ScanLeftToRemoteMode) == ScanLeftToRemoteMode)
+						tmp = refListArgsRefVsRemote(reLeft="8C00...", opt.RemoteName="origin") {
+							cachedRemoteRefs = CachedRemoteRefs(remoteName="origin") {
+								execute "git show-ref" and filter thos lines with "<sha1> refs/remotes/origin/.*" 
+								from filtered content discard "...refs/remotes/origin/HEAD"
+								ret.append(name sha1)  // E.g. a line from show ref "1234 refs/remotes/origin/uncle" will lead to append [ "uncle", 1234 ]o
+							} -> [ "master"->"3842...", ..., ... ]
+							actualRemoteRefs = RemoteRefs(remoteName="origin") {
+								execute "git ls-remote --heads --tags origin" and filter those line containing "<sha1> refs/heads|tags"
+								from filtered content discard "HEAD"
+								ret.append(name sha1)  // E.g. a line from show ref "1234 refs/remotes/origin/uncle" will lead to append [ "uncle", 1234 ]o
+							} -> [ "master"->"3842...", ..., ... ]
+							missingRefs = [] // those refs found in cachedRemoteRefs but not anymore in acutalRemoteRefs (they have been deleted)
+							if (len(missingRefs=[])>0)
+								?
+							else
+								return "8C00... --not --remotes=origin"
+						} -> "8C00... --not --remotes=origin"
+						refArgs.append(tmp="8C00... --not --remotes=origin") -> "rev-list --objects 8C00... --not --remotes=origin --"
+						cmd = startCommand("git", refArgs="rev-list --ob...")
+						concurrently parse all lines of cmd.Stdout and parse the SHA1's. return all SHA1s
+				} -> list of all SHA1s (one
+			to be continued
