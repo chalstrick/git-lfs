@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/github/git-lfs/lfs"
+	"github.com/github/git-lfs/git"
 	"github.com/github/git-lfs/vendor/_nuts/github.com/spf13/cobra"
 )
 
@@ -15,6 +16,8 @@ var (
 )
 
 func cleanCommand(cmd *cobra.Command, args []string) {
+	git.Logger.Printf("cleanCommand called\ncommand:%+v, args:%+v\n", cmd, args);
+	defer git.Logger.Printf("cleanCommand ended\n");
 	requireStdin("This command should be run by the Git 'clean' filter")
 	lfs.InstallHooks(false)
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"log"
 
 	"github.com/github/git-lfs/subprocess"
 	"github.com/github/git-lfs/vendor/_nuts/github.com/rubyist/tracerx"
@@ -29,6 +30,10 @@ const (
 	RefTypeRemoteTag    = RefType(iota)
 	RefTypeHEAD         = RefType(iota) // current checkout
 	RefTypeOther        = RefType(iota) // stash or unknown
+)
+
+var (
+	Logger             *log.Logger
 )
 
 // A git reference (branch, tag etc)
@@ -50,6 +55,12 @@ type CommitSummary struct {
 	CommitterName  string
 	CommitterEmail string
 	Subject        string
+}
+
+func init() {
+	f,_ := os.OpenFile("/tmp/log.gitLfs.log", os.O_RDWR | os.O_CREATE | os.O_APPEND, 0666)
+	Logger = log.New(f, "", log.LstdFlags);
+	Logger.Println("git Logger initialized")
 }
 
 func LsRemote(remote, remoteRef string) (string, error) {

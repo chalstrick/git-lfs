@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/github/git-lfs/lfs"
+	"github.com/github/git-lfs/git"
 )
 
 var uploadMissingErr = "%s does not exist in .git/lfs/objects. Tried %s, which matches %s."
@@ -39,12 +40,15 @@ func (c *uploadContext) prepareUpload(unfiltered []*lfs.WrappedPointer) (*lfs.Tr
 	numObjects := 0
 	totalSize := int64(0)
 	missingSize := int64(0)
+	for _, ptr := range unfiltered {git.Logger.Printf("prepareUpload: unfiltered:%+v\n", ptr)}
+	defer git.Logger.Printf("prepareUpload ended\n");
 
 	// separate out objects that _should_ be uploaded, but don't exist in
 	// .git/lfs/objects. Those will skipped if the server already has them.
 	for _, p := range unfiltered {
 		// object already uploaded in this process, skip!
 		if c.HasUploaded(p.Oid) {
+			git.Logger.Printf("prepareUpload: object %+v has already been uploaded\n", p);
 			continue
 		}
 
@@ -52,8 +56,10 @@ func (c *uploadContext) prepareUpload(unfiltered []*lfs.WrappedPointer) (*lfs.Tr
 		totalSize += p.Size
 
 		if lfs.ObjectExistsOfSize(p.Oid, p.Size) {
+			git.Logger.Printf("prepareUpload: object %+v should be uploaded. Add to uploadables\n", p);
 			uploadables = append(uploadables, p)
 		} else {
+			git.Logger.Printf("prepareUpload: we thin object %+v should be uploaded ... but we don't have it. Add to missingLocalObjects\n", p);
 			// We think we need to push this but we don't have it
 			// Store for server checking later
 			missingLocalObjects = append(missingLocalObjects, p)
@@ -82,6 +88,7 @@ func (c *uploadContext) prepareUpload(unfiltered []*lfs.WrappedPointer) (*lfs.Tr
 // against the server. Anything the server already has does not need to be
 // uploaded again.
 func (c *uploadContext) checkMissing(missing []*lfs.WrappedPointer, missingSize int64) {
+	for _, m := range missing {git.Logger.Printf("checkMissing: Ask the server for this object missing locally: %+v\n", m)} ;
 	numMissing := len(missing)
 	if numMissing == 0 {
 		return
@@ -122,6 +129,7 @@ func upload(c *uploadContext, unfiltered []*lfs.WrappedPointer) {
 	}
 
 	q, pointers := c.prepareUpload(unfiltered)
+	git.Logger.Printf("upload: prepareUpload returned the following objects: %+v\n", pointers);
 	for _, p := range pointers {
 		u, err := lfs.NewUploadable(p.Oid, p.Name)
 		if err != nil {
@@ -137,6 +145,7 @@ func upload(c *uploadContext, unfiltered []*lfs.WrappedPointer) {
 	}
 
 	q.Wait()
+	git.Logger.Printf("upload: Upload done\n");
 
 	for _, err := range q.Errors() {
 		if Debugging || lfs.IsFatalError(err) {

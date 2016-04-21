@@ -42,6 +42,9 @@ var (
 // In the case of deleting a branch, no attempts to push Git LFS objects will be
 // made.
 func prePushCommand(cmd *cobra.Command, args []string) {
+	git.Logger.Printf("prePushCommand called\ncommand:%+v, args:%+v\n", cmd, args)
+	defer git.Logger.Printf("prePushCommand ended\n")
+
 	if len(args) == 0 {
 		Print("This should be run through Git's pre-push hook.  Run `git lfs update` to install it.")
 		os.Exit(1)
@@ -74,10 +77,13 @@ func prePushCommand(cmd *cobra.Command, args []string) {
 		}
 
 		pointers, err := lfs.ScanRefs(left, right, scanOpt)
+		for _, ptr := range pointers {git.Logger.Printf("prePushCommand: while scanning ref %s,%s constructed the following pointer filen:%+v", left, right, ptr)}
+
 		if err != nil {
 			Panic(err, "Error scanning for Git LFS files")
 		}
 
+		git.Logger.Println("prePushCommand: start uploading")
 		upload(ctx, pointers)
 	}
 }

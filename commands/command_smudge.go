@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/github/git-lfs/lfs"
+	"github.com/github/git-lfs/git"
 	"github.com/github/git-lfs/vendor/_nuts/github.com/spf13/cobra"
 )
 
@@ -20,6 +21,8 @@ var (
 )
 
 func smudgeCommand(cmd *cobra.Command, args []string) {
+	git.Logger.Printf("smudgeCommand called\ncommand:%+v, args:%+v\n", cmd, args);
+	defer git.Logger.Printf("smudgeCommand ended\n");
 	requireStdin("This command should be run by the Git 'smudge' filter")
 	lfs.InstallHooks(false)
 

@@ -276,7 +276,9 @@ func revListArgsRefVsRemote(refTo, remoteName string) []string {
 	// If some refs are missing on the remote, use a more explicit diff
 
 	cachedRemoteRefs, _ := git.CachedRemoteRefs(remoteName)
+	for _,ref := range cachedRemoteRefs { git.Logger.Printf("revListArgsRefVsRemote: cachedRemoteRefs:%+v\n", ref) }
 	actualRemoteRefs, _ := git.RemoteRefs(remoteName)
+	for _,ref := range actualRemoteRefs { git.Logger.Printf("revListArgsRefVsRemote: actualRemoteRefs:%+v\n", ref) }
 
 	// Only check for missing refs on remote; if the ref is different it has moved
 	// forward probably, and if not and the ref has changed to a non-descendant
@@ -292,6 +294,7 @@ func revListArgsRefVsRemote(refTo, remoteName string) []string {
 		}
 		if !found {
 			missingRefs.Add(cachedRef.Name)
+			git.Logger.Printf("revListArgsRefVsRemote: found missingRef:%+v\n", cachedRef.Name)
 		}
 	}
 
@@ -341,6 +344,7 @@ func revListShas(refLeft, refRight string, opt *ScanRefsOptions) (*StringChannel
 	// file named "master".
 	refArgs = append(refArgs, "--")
 
+	git.Logger.Printf("revListShas: will start git command command")
 	cmd, err := startCommand("git", refArgs...)
 	if err != nil {
 		return nil, err
@@ -364,6 +368,7 @@ func revListShas(refLeft, refRight string, opt *ScanRefsOptions) (*StringChannel
 				opt.SetName(sha1, line[41:len(line)])
 			}
 			revs <- sha1
+			git.Logger.Printf("revListShas: add to revs: %+v\n", sha1)
 		}
 
 		stderr, _ := ioutil.ReadAll(cmd.Stderr)
@@ -454,6 +459,7 @@ func revListIndex(cache bool, indexMap *indexFileMap) (*StringChannelWrapper, er
 // which strings containing git sha1s will be sent. It returns a channel
 // from which sha1 strings can be read.
 func catFileBatchCheck(revs *StringChannelWrapper) (*StringChannelWrapper, error) {
+	git.Logger.Printf("catFileBatchCheck: will start git command. Revs will be provided on stdin")
 	cmd, err := startCommand("git", "cat-file", "--batch-check")
 	if err != nil {
 		return nil, err
@@ -487,6 +493,7 @@ func catFileBatchCheck(revs *StringChannelWrapper) (*StringChannelWrapper, error
 
 			if size < blobSizeCutoff {
 				smallRevs <- line[0:40]
+				git.Logger.Printf("catFileBatchCheck: add to smallRevs: %+v", line[0:40])
 			}
 		}
 
@@ -502,6 +509,7 @@ func catFileBatchCheck(revs *StringChannelWrapper) (*StringChannelWrapper, error
 	go func() {
 		for r := range revs.Results {
 			cmd.Stdin.Write([]byte(r + "\n"))
+			git.Logger.Printf("catFileBatchCheck: feed the following sha1 to the cat-file command: %+v", r)
 		}
 		err := revs.Wait()
 		if err != nil {
@@ -521,6 +529,7 @@ func catFileBatchCheck(revs *StringChannelWrapper) (*StringChannelWrapper, error
 // a Git LFS pointer. revs is a channel over which strings containing Git SHA1s
 // will be sent. It returns a channel from which point.Pointers can be read.
 func catFileBatch(revs *StringChannelWrapper) (*PointerChannelWrapper, error) {
+	git.Logger.Printf("catFileBatch: will start git command. Revs will be provided on stdin")
 	cmd, err := startCommand("git", "cat-file", "--batch")
 	if err != nil {
 		return nil, err
@@ -549,11 +558,13 @@ func catFileBatch(revs *StringChannelWrapper) (*PointerChannelWrapper, error) {
 
 			p, err := DecodePointer(bytes.NewBuffer(nbuf))
 			if err == nil {
-				pointers <- &WrappedPointer{
+				ptr := &WrappedPointer{
 					Sha1:    string(fields[0]),
 					Size:    p.Size,
 					Pointer: p,
 				}
+				pointers <- ptr
+				git.Logger.Printf("catFileBatch: created the following pointer file content: %+v", ptr);
 			}
 
 			_, err = cmd.Stdout.ReadBytes('\n') // Extra \n inserted by cat-file
@@ -574,6 +585,7 @@ func catFileBatch(revs *StringChannelWrapper) (*PointerChannelWrapper, error) {
 	go func() {
 		for r := range revs.Results {
 			cmd.Stdin.Write([]byte(r + "\n"))
+			git.Logger.Printf("catFileBatch: feed the following sha1 to the cat-file command: %+v", r);
 		}
 		err := revs.Wait()
 		if err != nil {
@@ -613,6 +625,7 @@ func startCommand(command string, args ...string) (*wrappedCmd, error) {
 		return nil, err
 	}
 
+	git.Logger.Printf("run_command: %s %s", command, strings.Join(args, " "))
 	tracerx.Printf("run_command: %s %s", command, strings.Join(args, " "))
 	if err := cmd.Start(); err != nil {
 		return nil, err
