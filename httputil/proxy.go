@@ -101,9 +101,6 @@ func useProxy(no_proxy, addr string) bool {
 	if err != nil {
 		return false
 	}
-	if host == "localhost" {
-		return false
-	}
 	if ip := net.ParseIP(host); ip != nil {
 		if ip.IsLoopback() {
 			return false
